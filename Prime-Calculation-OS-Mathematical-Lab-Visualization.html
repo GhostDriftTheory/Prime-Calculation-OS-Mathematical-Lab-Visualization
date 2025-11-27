@@ -1,0 +1,657 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <title>素数計算OS 数理ラボ：素数重力と安全ゾーン</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <!-- Babel (for JSX) -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <style>
+      body {
+        font-family: 'Helvetica Neue', Arial, 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', Meiryo, sans-serif;
+      }
+      /* カスタムスクロールバー（ライトテーマ用） */
+      ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+      ::-webkit-scrollbar-track {
+        background: #f1f5f9; 
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #cbd5e1; 
+        border-radius: 4px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #94a3b8; 
+      }
+    </style>
+  </head>
+  <body class="bg-slate-50 text-slate-800 font-sans antialiased selection:bg-emerald-500/30">
+    <div id="root"></div>
+
+    <script type="text/babel">
+      const { useState, useMemo } = React;
+
+      // ===== ユーティリティ =====
+
+      function isPrime(n) {
+        if (n < 2) return false;
+        if (n === 2) return true;
+        if (n % 2 === 0) return false;
+        const limit = Math.floor(Math.sqrt(n));
+        for (let i = 3; i <= limit; i += 2) {
+          if (n % i === 0) return false;
+        }
+        return true;
+      }
+
+      function generateInterval(start, length) {
+        const s = Math.max(2, start);
+        const len = Math.max(10, Math.min(length, 600)); // 負荷を抑える
+        const arr = [];
+        for (let i = 0; i < len; i++) {
+          arr.push(s + i);
+        }
+        return arr;
+      }
+
+      function computeWeights(nums) {
+        // Λ(n) = log p（nが素数のとき）、それ以外0 の簡易版
+        return nums.map((n) => (isPrime(n) ? Math.log(n) : 0));
+      }
+
+      function movingAverage(values, radius) {
+        const n = values.length;
+        if (n === 0) return [];
+        const r = Math.max(1, radius);
+        const out = new Array(n).fill(0);
+        for (let i = 0; i < n; i++) {
+          let sum = 0;
+          let cnt = 0;
+          for (let j = i - r; j <= i + r; j++) {
+            if (j >= 0 && j < n) {
+              sum += values[j];
+              cnt++;
+            }
+          }
+          out[i] = cnt > 0 ? sum / cnt : 0;
+        }
+        return out;
+      }
+
+      function normalize(values) {
+        if (!values.length) return [];
+        let min = Infinity;
+        let max = -Infinity;
+        for (const v of values) {
+          if (v < min) min = v;
+          if (v > max) max = v;
+        }
+        if (max === min) {
+          return values.map(() => 0.5);
+        }
+        return values.map((v) => (v - min) / (max - min));
+      }
+
+      // SVG用ポリライン生成
+      function makePolylinePoints(values, width, height) {
+        const n = values.length;
+        if (n === 0) return "";
+        if (n === 1) {
+          const x = width / 2;
+          const y = height * (1 - values[0]);
+          return `${x},${y}`;
+        }
+        const stepX = width / (n - 1);
+        return values
+          .map((v, i) => {
+            const x = stepX * i;
+            const y = height * (1 - v); // 上が大きい
+            return `${x},${y}`;
+          })
+          .join(" ");
+      }
+
+      // ===== コンポーネント =====
+
+      // ExpertToggle: 黒系カードとしてデザイン（プロ仕様モニター感）
+      function ExpertToggle({ title, children }) {
+        const [open, setOpen] = useState(false);
+        return (
+          <div className="mt-4 border border-slate-700/50 rounded-lg bg-slate-900 overflow-hidden shadow-md">
+            <button
+              className="w-full flex items-center justify-between px-4 py-2 text-sm text-emerald-400 hover:bg-slate-800 transition-colors"
+              onClick={() => setOpen((o) => !o)}
+            >
+              <span className="font-mono tracking-wide text-xs md:text-sm font-semibold">{title}</span>
+              <span className="text-[10px] ml-2 opacity-70 text-slate-400">{open ? "▲ CLOSE" : "▼ EXPERT NOTE"}</span>
+            </button>
+            {open && (
+              <div className="px-4 py-4 text-xs md:text-sm text-slate-300 whitespace-pre-wrap border-t border-slate-800 bg-slate-950/50 leading-relaxed font-sans">
+                {children}
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      function BarChart({ numbers, weights, height = 140 }) {
+        const maxW = Math.max(1, ...weights);
+        return (
+          <div className="overflow-x-auto pb-2">
+            <div className="flex items-end gap-[2px] min-w-[260px] px-2 py-3 border border-slate-800 rounded-xl bg-slate-900/40">
+              {numbers.map((n, idx) => {
+                const w = weights[idx];
+                const h = (w / maxW) * height;
+                const isP = w > 0;
+                return (
+                  <div key={n} className="flex flex-col items-center group relative">
+                    <div
+                      className={`w-[6px] rounded-t transition-all duration-300 ${
+                        isP ? "bg-emerald-500 group-hover:bg-emerald-400" : "bg-slate-700 group-hover:bg-slate-600"
+                      }`}
+                      style={{ height: `${Math.max(2, h)}px` }}
+                    />
+                    {/* Tooltip */}
+                     <div className="opacity-0 group-hover:opacity-100 absolute bottom-full mb-1 bg-slate-800 text-white text-[10px] px-2 py-1 rounded pointer-events-none whitespace-nowrap z-10 border border-slate-600 shadow-xl font-mono">
+                        {n} : {isP ? `Prime (log p ≈ ${w.toFixed(2)})` : "Composite"}
+                     </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      }
+
+      function LineChart({ values, height = 160 }) {
+        const width = 420;
+        const normalized = normalize(values);
+        const points = makePolylinePoints(normalized, width, height);
+        return (
+          <div className="overflow-x-auto pb-2">
+            <div className="min-w-[420px]">
+                <svg
+                width="100%"
+                viewBox={`0 0 ${width} ${height}`}
+                className="border border-slate-800 rounded-xl bg-slate-900/40 block"
+                >
+                {/* 0〜1のガイド線 */}
+                <line
+                    x1="0"
+                    y1={height * 0.75}
+                    x2={width}
+                    y2={height * 0.75}
+                    className="stroke-slate-700"
+                    strokeDasharray="4 4"
+                />
+                <polyline
+                    points={points}
+                    fill="none"
+                    className="stroke-emerald-400"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                />
+                </svg>
+            </div>
+          </div>
+        );
+      }
+
+      function DeltaChart({ Zmin }) {
+        if (!Number.isFinite(Zmin)) return null;
+        if (Zmin <= 0) {
+          return (
+            <div className="mt-3 p-3 rounded-lg bg-rose-950/20 border border-rose-900/30 text-sm text-rose-300 flex items-start gap-2">
+              <span className="text-lg">⚠️</span>
+              <div>
+                この区間では、地形の最小値 (Z_min) が 0 以下になっており、
+                デモ用 δ_demo は正になりません。
+                <br/>
+                （より素数が密な区間を選択してください）
+              </div>
+            </div>
+          );
+        }
+
+        const beta = 1.0;
+        const mainTerm = beta * Zmin;
+        const errorTerm = 0.6 * Zmin;
+        const delta = mainTerm - errorTerm; // = 0.4 Zmin > 0
+
+        const max = mainTerm;
+        const mainH = (mainTerm / max) * 120;
+        const errH = (errorTerm / max) * 120;
+        const dH = (delta / max) * 120;
+
+        return (
+          <div className="mt-4 p-4 rounded-xl bg-slate-800/40 border border-slate-700/40">
+            <div className="text-sm text-slate-300 mb-4">
+              以下の関係式を可視化しています：
+              <span className="text-emerald-300 font-mono font-medium mx-2 bg-slate-900/80 px-2 py-1 rounded text-xs">
+                 δ_demo = main − error 
+              </span>
+            </div>
+            <div className="flex items-end gap-6 justify-center md:justify-start">
+              <div className="flex flex-col items-center">
+                <div className="relative group">
+                    <div
+                    className="w-12 bg-emerald-500 rounded-t transition-all duration-500 shadow-[0_0_10px_rgba(16,185,129,0.2)]"
+                    style={{ height: `${mainH}px` }}
+                    ></div>
+                </div>
+                <span className="mt-2 text-xs font-mono text-slate-400">main</span>
+                <span className="text-[10px] text-slate-500">β·Z_min</span>
+              </div>
+
+              <div className="text-slate-500 font-bold mb-8">-</div>
+
+              <div className="flex flex-col items-center">
+                <div
+                  className="w-12 bg-amber-500 rounded-t transition-all duration-500 shadow-[0_0_10px_rgba(245,158,11,0.2)]"
+                  style={{ height: `${errH}px` }}
+                ></div>
+                <span className="mt-2 text-xs font-mono text-slate-400">error</span>
+                <span className="text-[10px] text-slate-500">Noise</span>
+              </div>
+
+              <div className="text-slate-500 font-bold mb-8">=</div>
+
+              <div className="flex flex-col items-center">
+                <div
+                  className="w-12 bg-sky-500 rounded-t transition-all duration-500 relative overflow-hidden shadow-[0_0_10px_rgba(14,165,233,0.3)]"
+                  style={{ height: `${dH}px` }}
+                >
+                    <div className="absolute inset-0 bg-gradient-to-t from-sky-400 to-sky-500"></div>
+                </div>
+                <span className="mt-2 text-xs font-mono text-sky-400 font-bold">δ_demo</span>
+                <span className="text-[10px] text-sky-500/80">Safe Zone</span>
+              </div>
+            </div>
+            
+            <div className="mt-4 pt-3 border-t border-slate-700/30 text-xs text-emerald-200/80 flex gap-2 items-center">
+               <div className="w-4 h-4 rounded-full border border-emerald-500/50 flex items-center justify-center text-[10px] text-emerald-500">✓</div>
+               <span>
+                  main − error &gt; 0 が成立。「谷が 0 より上にある」状態、すなわち
+                  <span className="font-medium font-mono"> δ_pos &gt; 0 </span>
+                  の概念的表現です。
+               </span>
+            </div>
+          </div>
+        );
+      }
+
+      function QuantumChart({ Zvalues }) {
+        if (!Zvalues.length) return null;
+        const [energy, setEnergy] = useState(0.5);
+        const width = 420;
+        const height = 180;
+        const norm = normalize(Zvalues);
+        const points = makePolylinePoints(norm, width, height);
+        const energyY = height * (1 - energy);
+
+        return (
+          <div className="mt-4">
+            <div className="text-sm mb-2 flex justify-between items-center text-slate-300">
+              <span>粒子エネルギー <span className="font-mono text-emerald-300">E</span>：</span>
+              <span className="text-xs text-emerald-400 font-mono">{energy.toFixed(2)}</span>
+            </div>
+            <input
+              type="range"
+              min="0.1"
+              max="0.9"
+              step="0.05"
+              value={energy}
+              onChange={(e) => setEnergy(parseFloat(e.target.value))}
+              className="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-emerald-500/80"
+            />
+            <div className="flex justify-between text-[10px] text-slate-500 mb-4 mt-1 px-1 font-mono">
+              <span>Low Energy</span>
+              <span>High Energy</span>
+            </div>
+            <div className="overflow-x-auto pb-2">
+              <div className="min-w-[420px]">
+                <svg
+                    width="100%"
+                    viewBox={`0 0 ${width} ${height}`}
+                    className="border border-slate-800 rounded-xl bg-slate-900/40 block"
+                >
+                    {/* ポテンシャル V(x) ≈ Z(u) */}
+                    <polyline
+                    points={points}
+                    fill="none"
+                    className="stroke-violet-400/80"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    />
+                    {/* エネルギー線 */}
+                    <line
+                    x1="0"
+                    y1={energyY}
+                    x2={width}
+                    y2={energyY}
+                    className="stroke-emerald-500/60"
+                    strokeDasharray="4 4"
+                    strokeWidth="1"
+                    />
+                    {/* 「粒子」イメージ（中央） */}
+                    <circle
+                    cx={width / 2}
+                    cy={energyY}
+                    r="4"
+                    className="fill-emerald-300"
+                    />
+                    
+                    <text x="10" y="20" fill="#a78bfa" fontSize="10" fontFamily="monospace" opacity="0.8">V(x)</text>
+                    <text x="10" y={energyY - 5} fill="#34d399" fontSize="10" fontFamily="monospace" opacity="0.8">E</text>
+                </svg>
+              </div>
+            </div>
+            <div className="mt-2 text-xs text-slate-400 bg-slate-900/30 p-3 rounded-lg border border-slate-800">
+              紫の曲線がポテンシャル <span className="font-mono text-violet-400">V(x)</span>、緑の線がエネルギー <span className="font-mono text-emerald-400">E</span> のモデルです。
+              ポテンシャル障壁による粒子の挙動（閉じ込めや透過）を視覚的に模索します。
+            </div>
+          </div>
+        );
+      }
+
+      function App() {
+        const [start, setStart] = useState(10000);
+        const [length, setLength] = useState(200);
+        const [smoothRadius, setSmoothRadius] = useState(15);
+
+        const nums = useMemo(
+          () => generateInterval(Number(start) || 0, Number(length) || 0),
+          [start, length]
+        );
+        const weights = useMemo(() => computeWeights(nums), [nums]);
+        const Z = useMemo(
+          () => movingAverage(weights, smoothRadius),
+          [weights, smoothRadius]
+        );
+        const Zmin = useMemo(
+          () => (Z.length ? Math.min(...Z) : NaN),
+          [Z]
+        );
+
+        return (
+          <div className="min-h-screen pb-20 bg-slate-50 text-slate-800">
+            {/* ヘッダー：ライトテーマ */}
+            <header className="sticky top-0 z-50 border-b border-slate-200 bg-white/90 backdrop-blur-md shadow-sm">
+              <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-lg bg-emerald-500 text-white flex items-center justify-center shadow-md">
+                    <span className="text-sm font-bold font-mono">PG</span>
+                  </div>
+                  <div>
+                    <h1 className="text-sm md:text-base font-bold text-slate-800 tracking-tight">
+                      素数計算OS 数理ラボ
+                    </h1>
+                    <p className="text-[10px] text-slate-500 font-mono tracking-wide">
+                      Prime Calculation OS: Mathematical Lab & Visualization
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </header>
+
+            {/* 本文 */}
+            <main className="max-w-5xl mx-auto px-4 mt-8 space-y-10">
+              
+              {/* ブロック1：概要（白カード） */}
+              <section className="bg-white border border-slate-200 rounded-xl p-6 md:p-8 shadow-sm">
+                <div className="inline-flex items-center gap-2 px-2 py-1 rounded text-emerald-600 text-xs font-mono mb-4 border border-emerald-100 bg-emerald-50">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                  素数計算OS 数理モデル
+                </div>
+                <h2 className="text-xl md:text-2xl font-bold mb-4 text-slate-800">
+                  素数計算OSの中身：素数重力と「安全ゾーン」
+                </h2>
+                <p className="text-sm md:text-base text-slate-600 leading-relaxed mb-6 max-w-3xl">
+                  このページは、素数計算OSのうら側で動いている
+                  <span className="text-emerald-600 font-bold mx-1">
+                  「素数に重さをつけたフィールド」と「安全ゾーン δ_pos」
+                  </span>
+                  のしくみを、図と簡単な式でまとめた数理解説ページです。
+                </p>
+                <p className="text-sm md:text-base text-slate-600 leading-relaxed mb-6 max-w-3xl">
+                  素数に重さ log p をつけてフィールドを作り、それを平均して地形 Z(u) を作ります。さらに、その地形がどこでも 0 より下に落ちない（δ_pos &gt; 0）ことをチェックすることで、「このOSが自信をもって答えてよい範囲」を決めています。
+                </p>
+
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs font-mono text-slate-500">
+                  <div className="px-3 py-2 rounded bg-slate-50 border border-slate-100 flex flex-col gap-1">
+                    <span className="text-emerald-600 font-bold">STEP 01</span>
+                    <span>Weight Field Λ(n)</span>
+                  </div>
+                  <div className="px-3 py-2 rounded bg-slate-50 border border-slate-100 flex flex-col gap-1">
+                    <span className="text-emerald-600 font-bold">STEP 02</span>
+                    <span>Landscape Z(u)</span>
+                  </div>
+                  <div className="px-3 py-2 rounded bg-slate-50 border border-slate-100 flex flex-col gap-1">
+                    <span className="text-emerald-600 font-bold">STEP 03</span>
+                    <span>Safety (δ_pos &gt; 0)</span>
+                  </div>
+                  <div className="px-3 py-2 rounded bg-slate-50 border border-slate-100 flex flex-col gap-1">
+                    <span className="text-violet-500 font-bold">STEP 04</span>
+                    <span>Quantum Potential</span>
+                  </div>
+                </div>
+              </section>
+
+              {/* ブロック2：区間入力（白カード） */}
+              <section className="bg-white border border-slate-200 rounded-xl p-6 md:p-8 shadow-sm">
+                <h2 className="text-base font-semibold mb-4 flex items-center gap-2 text-slate-800">
+                    <span className="w-0.5 h-4 bg-emerald-500 rounded-full"></span>
+                    Parameter Settings
+                </h2>
+                <div className="bg-slate-50 rounded-lg p-5 border border-slate-100">
+                    <p className="text-xs text-slate-500 mb-6">
+                    素数の「重みフィールド」と「地形」を生成するための整数区間を設定します。
+                    <br/>
+                    <span className="opacity-70">※ ブラウザ上での軽量デモのため、区間長や平滑化の幅は一定範囲に制限しています。</span>
+                    </p>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-end">
+                    <div>
+                        <label className="block text-xs font-medium text-slate-500 mb-2 font-mono">
+                        Start Integer
+                        </label>
+                        <input
+                        type="number"
+                        value={start}
+                        onChange={(e) => setStart(parseInt(e.target.value || "0", 10))}
+                        className="w-full px-3 py-2 rounded bg-white border border-slate-300 text-slate-800 text-sm focus:border-emerald-500 outline-none transition-colors font-mono shadow-sm"
+                        placeholder="e.g. 10000"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-xs font-medium text-slate-500 mb-2 font-mono">
+                        Length (max 600)
+                        </label>
+                        <input
+                        type="number"
+                        value={length}
+                        onChange={(e) => setLength(parseInt(e.target.value || "0", 10))}
+                        className="w-full px-3 py-2 rounded bg-white border border-slate-300 text-slate-800 text-sm focus:border-emerald-500 outline-none transition-colors font-mono shadow-sm"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-xs font-medium text-slate-500 mb-2 font-mono">
+                        Smoothing Radius (±{smoothRadius})
+                        </label>
+                        <input
+                        type="range"
+                        min="3"
+                        max="40"
+                        value={smoothRadius}
+                        onChange={(e) => setSmoothRadius(parseInt(e.target.value, 10))}
+                        className="w-full h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                        />
+                    </div>
+                    </div>
+                </div>
+              </section>
+
+              {/* ブロック3：STEP1 素数の重さ */}
+              <section className="bg-white border border-slate-200 rounded-xl p-6 md:p-8 shadow-sm">
+                <h2 className="text-base font-semibold mb-2 text-slate-800 font-mono flex items-center gap-2">
+                  <span className="text-emerald-500 font-bold">01</span> Weight Field
+                </h2>
+                <p className="text-sm text-slate-600 mb-6">
+                   素数の位置に <span className="font-mono text-emerald-600 font-bold">log p</span> という「重み」の柱を立てます。
+                   これが地形形成の起点となる分布です。
+                </p>
+                
+                {/* モニターエリア（黒） */}
+                <div className="bg-slate-950 rounded-xl p-4 md:p-6 border border-slate-800 shadow-inner">
+                   <BarChart numbers={nums} weights={weights} />
+                </div>
+
+                <ExpertToggle title="専門家メモ：フォン・マンゴルト関数 Λ(n)">
+                  Λ(n) = log p （n = p^k, p 素数, k ≥ 1 のとき）, それ以外 0 と定義します。
+                  <br />
+                  <br />
+                  本デモでは、<span className="text-emerald-200">n = p の場合のみ log n として表示する簡略版</span>を用いており、素数冪 p^k の寄与は割愛しています。
+                  <br />
+                  素数計算OSの実装では、完全な Λ(n) を有限窓で畳み込むことで Z(u) を構成し、
+                  さらに有限閉包（finite closure）条件の中で δ_pos &gt; 0 を評価しています。
+                </ExpertToggle>
+              </section>
+
+              {/* ブロック4：STEP2 & 3 地形 Z(u) と δ_demo */}
+              <section className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="bg-white border border-slate-200 rounded-xl p-6 md:p-8 shadow-sm">
+                    <h2 className="text-base font-semibold mb-2 text-slate-800 font-mono flex items-center gap-2">
+                        <span className="text-emerald-500 font-bold">02</span> Landscape Z(u)
+                    </h2>
+                    <p className="text-sm text-slate-600 mb-6">
+                        近傍の重みを平均化処理することで、連続的な地形 <span className="font-mono text-emerald-600 font-bold">Z(u)</span> が出現します。
+                    </p>
+                    
+                    {/* モニターエリア（黒） */}
+                    <div className="bg-slate-950 rounded-xl p-4 md:p-6 border border-slate-800 shadow-inner">
+                        <LineChart values={Z} />
+                    </div>
+                    
+                    <ExpertToggle title="専門家メモ：Z(u) と -ζ'/ζ">
+                        解析的には、Z(u) は -ζ'/ζ(1/2 + iu) の有限窓平滑版として定式化されます。
+                        <br />
+                        <br />
+                        本デモでは以下の簡易モデルを採用しています：
+                        <br />
+                        ・Λ(n) の有限区間上の列を入力とし、
+                        <br />
+                        ・単純移動平均フィルタを適用して Z(u) を近似描画。
+                        <br />
+                        <br />
+                        理論コア部分では、Fejér–Yukawa 型カーネル K を用いた畳み込み Z_K(u) = (Λ * K)(u) を構成し、その下界評価を行っています。
+                    </ExpertToggle>
+                  </div>
+
+                  <div className="bg-white border border-slate-200 rounded-xl p-6 md:p-8 shadow-sm">
+                    <h2 className="text-base font-semibold mb-2 text-slate-800 font-mono flex items-center gap-2">
+                        <span className="text-emerald-500 font-bold">03</span> Safety Margin
+                    </h2>
+                    <p className="text-sm text-slate-600 mb-4">
+                        地形の極小値 <span className="font-mono font-bold text-slate-700">Z_min</span> がノイズ項よりも優位であれば、系は安定領域にあります。
+                    </p>
+
+                    {/* モニターエリア（黒） */}
+                    <div className="bg-slate-950 rounded-xl p-4 md:p-6 border border-slate-800 shadow-inner">
+                        <DeltaChart Zmin={Zmin} />
+                    </div>
+
+                    <ExpertToggle title="専門家メモ：δ_pos の評価不等式">
+                        解析レイヤーでは、有限窓 Z(u) の一様下界 Z_min と、誤差項の総和を比較します：
+                        <br />
+                        <br />
+                        β · Z_min &gt; c_WG + c_zero_fin + c_zero_tail(T0) + c_tail(X0) + c_win(W, R)
+                        <br />
+                        <br />
+                        これらを外向き丸めを用いた区間演算（Σ₁ 不等式）として処理し、main − error &gt; 0 を証明します。
+                        <br />
+                        <span className="text-emerald-200">※本デモの δ_demo は係数を固定した玩具モデルであり、実際の厳密評価とは数値的に一致しません。</span>
+                        <br />
+                        <br />
+                        <span className="text-emerald-200 border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 rounded block mt-2 text-xs">
+                           本OSの安全ゾーン δ_pos の評価は、RH/GRH/zero-density などの未証明仮定を一切用いない「条件なし」の解析に基づきます。
+                        </span>
+                    </ExpertToggle>
+                  </div>
+              </section>
+
+              {/* ブロック5：量子モード */}
+              <section className="bg-white border border-slate-200 rounded-xl p-6 md:p-8 shadow-sm relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-64 h-64 bg-violet-100/50 rounded-full blur-3xl pointer-events-none -mr-20 -mt-20"></div>
+                
+                <h2 className="text-base font-semibold mb-2 text-slate-800 font-mono flex items-center gap-2">
+                   <span className="text-violet-500 font-bold">04</span> Quantum Potential
+                </h2>
+                <p className="text-sm text-slate-600 mb-6">
+                  同一の地形を物理学的な「ポテンシャル V(x)」として再解釈します。
+                  素数分布が形成する場の中での量子の振る舞い（束縛状態やトンネル効果）を模索する視点です。
+                </p>
+
+                {/* モニターエリア（黒） */}
+                <div className="bg-slate-950 rounded-xl p-4 md:p-6 border border-slate-800 shadow-inner">
+                    <QuantumChart Zvalues={Z} />
+                </div>
+
+                <ExpertToggle title="専門家メモ：Schrödinger 作用素との対応">
+                  1次元 Schrödinger 方程式
+                  <br />
+                  &nbsp;&nbsp;(-d²/dx² + V(x)) ψ(x) = E ψ(x)
+                  <br />
+                  において、V(x) をゼータ関数等に由来するポテンシャルと見なすアプローチは、リーマン零点のスペクトル解釈（Berry-Keating等）と接続します。
+                  <br />
+                  <br />
+                  本プロジェクトの拡張系では、このポテンシャルを用いた零点分布とスペクトル対応、および有限閉包下での力学系的な安定性解析を設計しています。
+                </ExpertToggle>
+              </section>
+
+              {/* ブロック6：OSとの接続 */}
+              <section className="bg-white border border-slate-200 rounded-xl p-8 text-center shadow-sm">
+                <h2 className="text-lg font-semibold mb-4 text-slate-800 tracking-wide font-mono">
+                  Conclusion
+                </h2>
+                <p className="text-sm text-slate-600 mb-8 max-w-2xl mx-auto leading-relaxed">
+                  Prime Gravity モデルにおいて、地形の安全性が確認された区間（δ_pos > 0）でのみ、システムは決定論的な回答を出力します。
+                  数論的な「重み」の制御が情報システムとしての「信頼性」を担保し、
+                  さらには物理的な「安定性」とも通底する構造を持つことを、有限窓 Z(u) と δ_pos の不等式で明示します。
+                </p>
+                <div className="flex flex-wrap justify-center gap-4">
+                  <button
+                    className="px-6 py-2.5 rounded-lg bg-emerald-500 text-white font-bold text-sm hover:bg-emerald-600 transition shadow-lg shadow-emerald-200"
+                  >
+                    Project Home
+                  </button>
+                </div>
+              </section>
+            </main>
+            
+            <footer className="max-w-5xl mx-auto px-4 mt-16 pb-8 text-center space-y-2">
+                <div className="text-xs text-slate-500 font-mono">
+                    本デモは GhostDrift 数理研究プロジェクトの一部として設計されています。
+                </div>
+                <div className="text-[10px] text-slate-400 font-mono">
+                    &copy; 2025 Prime Calculation OS Project. All rights reserved.
+                </div>
+            </footer>
+          </div>
+        );
+      }
+
+      const root = ReactDOM.createRoot(document.getElementById("root"));
+      root.render(<App />);
+    </script>
+  </body>
+</html>
